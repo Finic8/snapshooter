@@ -3,7 +3,7 @@
 ##1 Introduction
 
 
-snapshooter is a bash script which allows you to create snapshots and send them incrementally to local or remote locations through ssh. Remote servers can be woken up using Wake-on-LAN. It automatically keeps a configurable number of snapshots.
+snapshooter is a bash script which allows you to create btrfs snapshots and send them incrementally to local or remote locations through ssh. Remote servers can be woken up using Wake-on-LAN. It automatically keeps a configurable number of snapshots.
 
 
 ##2 Configuration
