@@ -1,0 +1,254 @@
+#!/bin/bash
+
+# snapshooter 
+# License: GNU GPLv3
+
+# Documentation at https://github.com/Finic8/snapshooter
+
+configdir="/usr/local/etc/snapshooter"
+
+[ ! -f $configdir/snapshooter.conf ] && { echo "$configdir/snapshooter.conf does not exist"; exit 1; }
+source $configdir/snapshooter.conf
+
+echo "snapshooter"
+date
+
+printusage () {
+echo "usage: snapshooter mode"
+echo "snapshooter create [${periods[@]}]"
+echo "snapshooter send configname"
+echo "snapshooter send configname0,configname1"
+echo "Detailed documentation available at https://github.com/Finic8/snapshooter"
+exit 2
+}
+[ $# -eq 0 ] && printusage
+
+if [ $1 == 'create' ]; then
+	for (( i=${#periods[@]}; i>0; i-- )); do
+		if [[ ${periods[$i-1]} == "$2" ]]; then
+			break
+		elif [ $i -eq 1 ]; then
+			echo "invalid period specified"
+			printusage
+		else
+			continue
+		fi
+	done
+	configs=$configdir/create/*.conf
+elif [ $1 == 'send' ]; then
+	if [ -z "$2" ]; then
+		configs=$configdir/send/*.conf
+	else
+		IFS=',' read -ra possconfigs <<< "$2"
+		for possconfig in ${possconfigs[@]}; do
+			if [ -f $configdir/send/$possconfig.conf ]; then
+				configs+=("$configdir/send/$possconfig.conf")
+			else
+				echo "invalid config specified"
+				printusage
+			fi
+		done
+	fi
+elif [ $1 == '--help' ]; then
+	printusage
+else
+	echo "invalid option"
+	printusage
+fi
+getnames () {
+	if [ -z "$name" ]; then
+		echo "ERROR: no name specified"
+		exit 11
+	elif [ "$name" == '*' ]; then
+		allcontents=$(btrfs subvolum list -o $snapdir | awk -F/ '{print $NF}')
+		for allcontent in $allcontents; do
+			echo "$allcontent"
+			if [[ "$snapdir/$allcontent" == "$destination" ]]; then continue
+			else
+				contents+=("$(echo $allcontent | awk -F- '{print $1}' | awk -F_ '{print $(NF-1)}')")
+			fi
+		done
+		relativcontents=$(printf '%s\n' "${contents[@]}" | sort)
+		pref=
+		for content in ${relativcontents[@]}; do
+			if [ "$content" == "$pref" ]; then continue
+			else
+				names+=("$content")
+				pref=$content
+			fi
+		done
+	else
+		IFS=',' read -ra names <<< "$name"
+		for possname in ${names[@]}; do
+			content=$(btrfs subvolume list -o $snapdir | awk -F/ '{print $NF}' | grep $possname)
+			[ -z "$content" ] && { echo "ERROR: $possname does not exist"; exit 6; }
+		done
+	fi
+}
+sshconect () {
+	if [ -n "$port" ]; then
+		if [ $port -lt o ] || [ $port -gt 65535 ]; then
+			echo "invalid port specified"
+			exit 10
+		fi
+	 	sshlogin="-p "$port" "$sshlogin
+	fi
+	if [ -n "$remac" ]; then
+		if [ ! -x $wol ];then
+			echo "specify correct Wake-on-LAN binary"
+			exit 2
+		fi
+		echo "waking up remote server..."
+		if [ -n "$ip" ]; then
+			$wol -i $ip $mac
+			$wol -i $ip $mac
+		else
+			$wol $mac
+			$wol $mac
+		fi
+		echo "waiting for server to boot..."
+		[ -z $boottime ] && boottime=$defaulboottime
+		sleep $boottime
+	fi
+	ssh $sshlogin "uname -a"
+	if [ $? -ne 0 ]; then
+		echo "server is offline, exiting..."
+		exit 3
+	fi
+	echo "server online, running backup..."
+}
+cleanup () {
+	for (( i=${#periods[@]}; i>0; i-- )); do
+		getdestcont
+		tobedeleted=$(printf '%s\n' $destcont | grep ${periods[$i-1]}| tac | tail -n +$(( ${ntk[$i-1]} + 1)))
+		if [ -z "$sshlogin" ]; then
+			for tobedel in $tobedeleted; do
+				echo "deleting: $destination/$tobedel"
+				btrfs subvolume delete "$destination/$tobedel"
+			done
+			sync
+		else
+			for tobedel in $tobedeleted; do
+				echo "deleting(ssh): $destination/$tobedel"
+				ssh $sshlogin "btrfs subvolume delete "$destination/$tobedel""
+			done
+			ssh $sshlogin "sync"
+		fi
+	done
+	unset possinit
+}
+getdestcont () {
+	if [ -z "$sshlogin" ]; then
+		[ ! -d $destination ] && { echo "ERROR: destination does not exist"; exit 7; }
+		destcont=$(btrfs subvolume list -o $destination | awk -F/ '{print $NF}' | grep $snapname | sort)
+	else
+		if $(ssh $sshlogin "[ ! -d $destination ]"); then
+			echo "ERROR: destination does not exist"
+			exit 8
+		fi
+		destcont=$(ssh $sshlogin "btrfs subvolume list -o $destination" | awk -F/ '{print $NF}' | grep $snapname | sort)
+	fi
+}
+sendsnaps () {
+	for snapname in ${names[@]}
+	do
+		getdestcont
+		sourcecont=$(btrfs subvolume list -o $snapdir | awk -F/ '{print $NF}' | grep $snapname | sort)
+		commonsnap="$(diff -y <(printf '%s\n' $sourcecont) <(printf '%s\n' $destcont) | egrep -v '<|>|\|' | awk 'END{print $1}')"
+		for (( i=${#periods[@]}; i>0; i-- )); do
+			srcntk=$(printf '%s\n' $sourcecont | grep "${periods[$i-1]}" | wc -l)
+			if [ ${ntk[$i-1]} -eq 0 ] || [ $srcntk -eq 0 ]; then 
+				continue
+			else
+				possinit+=("$(diff -y <(printf '%s\n' $sourcecont) <(printf '%s\n' $destcont) | grep "${periods[$i-1]}" | tail -n ${ntk[$i-1]} | egrep '<|\|' | awk '{print $1}')")
+			fi
+		done
+		snapshots=$(printf '%s\n' "${possinit[@]}" | sort)
+		echo "snapshots: $snapshots"
+		if [ -z "$snapshots" ]; then 
+			echo $snapname": everything up to date"
+			cleanup
+			continue
+		fi
+		if [ -z "$commonsnap" ]; then
+			parentsnap=$(echo $snapshots | cut -d " " -f1)
+			snapshots=$(echo $snapshots | cut -d " " -f2-)
+	
+			echo "bootstrapping... $parentsnap"
+			if [ -z "$sshlogin" ]; then
+				btrfs send $snapdir/$parentsnap | btrfs receive $destination/
+			else
+				btrfs send $snapdir/$parentsnap | ssh $sshlogin "btrfs receive $destination/"
+			fi
+			echo "bootstrapping complete"
+		else
+			parentsnap=$commonsnap
+			echo "parent snapshot present: $parentsnap"
+		fi
+		echo "incrementally sending snapshots..." 
+		for snap in $snapshots; do
+			echo "sending: $snap"
+			if [ -z "$sshlogin" ]; then
+				btrfs send -p $snapdir/$parentsnap $snapdir/$snap | btrfs receive $destination/
+			else
+				btrfs send -p $snapdir/$parentsnap $snapdir/$snap | ssh $sshlogin "btrfs receive $destination/"
+			fi
+			parentsnap=$snap
+		done
+	cleanup
+	done
+}
+createsnaps () {
+	for snapname in ${names[@]}; do
+		echo "creating a $1 snapshot of $snapname"
+		btrfs subvolume snapshot -r $snapdir/$snapname $destination/$prefix$snapname"_$(date +%Y-%m-%d_%H:%M:%S)_$1$postfix"
+		cleanup
+	done
+}
+for config in ${configs[@]} 
+do
+	echo "config $config"
+	[ ! -f $config ] && { echo "ERROR: specified config does not exist"; exit 1; }
+	source $config
+	[ -z $snapdir ] && { echo "ERROR: snapdir in $config is not set"; exit 3; }
+	[ -z $destination ] && { echo "ERROR: destination in $config is not set"; exit 4; }
+	
+	for period in ${periods[@]}
+	do
+		if [[ ${!period} = *[!0-9]* ]]; then
+			echo "$period not a number"
+			exit 9
+		elif [[ -z ${!period} ]]; then
+			ntk+=( 0 )
+		else
+			ntk+=( "${!period}" )
+		fi
+		eval "$period=0"
+	done
+	[ -n "$prefix" ] && prefix=$prefix"_"
+	[ -n "$postfix" ] && postfix="_"$postfix
+	echo ${periods[@]}
+	echo "ntk ${ntk[@]}"
+	[ ! -d $snapdir ] && { echo "ERROR: snapdir does not exist"; exit 5; }
+	getnames
+	echo "names ${names[@]}"
+	if [ $1 == 'create' ];then
+		createsnaps $2
+	else
+		if [ -n "$sshlogin" ]; then 
+			sshconect
+		fi
+		sendsnaps
+	fi
+	unset ntk
+	unset snapdir
+	unset destination
+	unset sshlogin
+	unset mac
+	unset ip
+	unset port
+	unset boottime
+	unset prefix
+	unset postfix
+done
+exit 0
