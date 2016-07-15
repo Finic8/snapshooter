@@ -40,6 +40,12 @@ The individual config files, for subvolumes, which should be snapshoted follow t
 	# recursive snapshooting is supported, just set name to '*'
 	name='subvol0'
 	
+	# if set to yes, the script will search for a subvolume named $name
+	# in the $snapdir
+	# if you want to snapshot the snapdir itself, for example /,
+	# set this to no
+	recursive='yes'
+
 	# directory where the subvolume is located
 	snapdir='/pool'
 	
