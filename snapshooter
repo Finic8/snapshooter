@@ -7,11 +7,15 @@
 
 configdir="/usr/local/etc/snapshooter"
 
-[ ! -f $configdir/snapshooter.conf ] && { echo "$configdir/snapshooter.conf does not exist"; exit 1; }
-source $configdir/snapshooter.conf
-
 echo "snapshooter"
 date
+if [ "$(id -u)" != "0" ]; then
+	echo "ERROR: must be run as root"
+	exit 12
+fi
+
+[ ! -f $configdir/snapshooter.conf ] && { echo "$configdir/snapshooter.conf does not exist"; exit 1; }
+source $configdir/snapshooter.conf
 
 printusage () {
 echo "usage: snapshooter mode"
