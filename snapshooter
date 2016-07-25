@@ -134,7 +134,7 @@ sshconect () {
 }
 cleanup () {
 	for (( i=${#periods[@]}; i>0; i-- )); do
-		getdestcont
+		destcont=$(getcontents $destination)
 		tobedeleted=$(printf '%s\n' $destcont | grep ${periods[$i-1]}| tac | tail -n +$(( ${ntk[$i-1]} + 1)))
 		if [ -z "$sshlogin" ]; then
 			for tobedel in $tobedeleted; do
@@ -150,25 +150,27 @@ cleanup () {
 			ssh $sshlogin "sync"
 		fi
 	done
-	unset possinit
 }
-getdestcont () {
-	if [ -z "$sshlogin" ]; then
-		[ ! -d $destination ] && { echo "ERROR: destination does not exist"; exit 7; }
-		destcont=$(btrfs subvolume list -o $destination | awk -F/ '{print $NF}' | grep $snapname | sort)
+getcontents () {
+	if [ -n "$sshlogin" ] && [ "$1" == "$destination" ]; then
+		cont=$(ssh $sshlogin "btrfs subvolume list -o $destination" | awk -F/ '{print $NF}' | grep $snapname | sort)
 	else
-		if $(ssh $sshlogin "[ ! -d $destination ]"); then
-			echo "ERROR: destination does not exist"
-			exit 8
-		fi
-		destcont=$(ssh $sshlogin "btrfs subvolume list -o $destination" | awk -F/ '{print $NF}' | grep $snapname | sort)
+		cont=$(btrfs subvolume list -o $1 | awk -F/ '{print $NF}' | grep $snapname | sort)
 	fi
+	[ -n "$prefix" ] && cont=$(printf '%s\n' $cont | grep "$prefix")
+	[ -n "$postfix" ] && cont=$(printf '%s\n' $cont | grep "$postfix")
+	printf '%s\n' $cont
 }
 sendsnaps () {
 	for snapname in ${names[@]}
 	do
-		getdestcont
-		sourcecont=$(btrfs subvolume list -o $snapdir | awk -F/ '{print $NF}' | grep $snapname | sort)
+	(
+		destcont=$(getcontents $destination)
+		echo "destcont"
+		printf '%s\n' $destcont
+		sourcecont=$(getcontents $snapdir)
+		echo "sourcecont:"
+		printf '%s\n' $sourcecont
 		commonsnap="$(diff -y <(printf '%s\n' $sourcecont) <(printf '%s\n' $destcont) | egrep -v '<|>|\|' | awk 'END{print $1}')"
 		for (( i=${#periods[@]}; i>0; i-- )); do
 			srcntk=$(printf '%s\n' $sourcecont | grep "${periods[$i-1]}" | wc -l)
@@ -211,11 +213,12 @@ sendsnaps () {
 			parentsnap=$snap
 		done
 	cleanup
+	)
 	done
 }
 createsnaps () {
+	echo "creating $1 snapshots" 
 	for snapname in ${names[@]}; do
-		echo "creating a $1 snapshot of $snapname"
 		if [ "$recursive" == "no" ]; then
 			sourcesnap=$snapdir
 		else
@@ -227,6 +230,7 @@ createsnaps () {
 }
 for config in ${configs[@]} 
 do
+(
 	echo "config $config"
 	[ ! -f $config ] && { echo "ERROR: specified config does not exist"; exit 1; }
 	source $config
@@ -257,20 +261,18 @@ do
 	else
 		if [ -n "$sshlogin" ]; then 
 			sshconect
+			if $(ssh $sshlogin "[ ! -d $destination ]"); then
+				echo "ERROR: destination does not exist"
+				exit 8
+			fi
+		else
+			if [ ! -d $destination ]; then 
+				echo "ERROR: destination does not exist"
+				exit 7
+			fi
 		fi
 		sendsnaps
 	fi
-	unset ntk
-	unset names
-	unset snapdir
-	unset destination
-	unset recursive
-	unset sshlogin
-	unset mac
-	unset ip
-	unset port
-	unset boottime
-	unset prefix
-	unset postfix
+)
 done
 exit 0
