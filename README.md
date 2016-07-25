@@ -82,7 +82,6 @@ config file syntax for snapshots which should be sent:
 	# recursive snapshooting is supported, just set name to '*'
 	name='subvol0'
 
-
 	# directory where the snapshots are located.
 	# this must be the same directory as the destination
 	# of the corresponding "create config"
@@ -90,6 +89,13 @@ config file syntax for snapshots which should be sent:
 
 	# destination, where snapshots should be sent to
 	destination='/mnt/usb-hdd'
+
+	# optional prefix and postfix for the snapshot can be set here. 
+	# for example the hostname of the machine, to avoid confusion, 
+	# when snapshots of the root filesystem of multiple machines
+	# are be backed up on one server
+	prefix='laptop'
+	postfix=''
 
 	# numbers of snapshots, that should be kept.
 	# Each period must be specified in snapshooter.conf.
