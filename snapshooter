@@ -123,6 +123,10 @@ sshconect () {
 		fi
 		echo "waiting for server to boot..."
 		[ -z $boottime ] && boottime=$defaulboottime
+		if ! [[ $boottime =~ ^-?[0-9]+$ ]]; then
+			echo "ERROR: boottime not a number"
+			exit 15
+		fi
 		sleep $boottime
 	fi
 	ssh $sshlogin "uname -a"
@@ -166,11 +170,11 @@ sendsnaps () {
 	do
 	(
 		destcont=$(getcontents $destination)
-		echo "destcont"
-		printf '%s\n' $destcont
+		#echo "destcont"
+		#printf '%s\n' $destcont
 		sourcecont=$(getcontents $snapdir)
-		echo "sourcecont:"
-		printf '%s\n' $sourcecont
+		#echo "sourcecont:"
+		#printf '%s\n' $sourcecont
 		commonsnap="$(diff -y <(printf '%s\n' $sourcecont) <(printf '%s\n' $destcont) | egrep -v '<|>|\|' | awk 'END{print $1}')"
 		for (( i=${#periods[@]}; i>0; i-- )); do
 			srcntk=$(printf '%s\n' $sourcecont | grep "${periods[$i-1]}" | wc -l)
@@ -181,7 +185,8 @@ sendsnaps () {
 			fi
 		done
 		snapshots=$(printf '%s\n' "${possinit[@]}" | sort)
-		echo "snapshots: $snapshots"
+		echo "snapshots:" 
+		echo "$snapshots"
 		if [ -z "$snapshots" ]; then 
 			echo $snapname": everything up to date"
 			cleanup
@@ -260,18 +265,28 @@ do
 		createsnaps $2
 	else
 		if [ -n "$sshlogin" ]; then 
+			if ! [[ "$poweroffserver" =~ yes|no ]]; then
+				echo "ERROR: poweroffserver can only be yes/no"
+				exit 16
+			fi
 			sshconect
 			if $(ssh $sshlogin "[ ! -d $destination ]"); then
 				echo "ERROR: destination does not exist"
 				exit 8
+			fi
+			sendsnaps
+
+			if [ "$poweroffserver" == "yes" ]; then
+				echo "shutting down server..."
+				ssh $sshlogin "poweroff"
 			fi
 		else
 			if [ ! -d $destination ]; then 
 				echo "ERROR: destination does not exist"
 				exit 7
 			fi
+			sendsnaps
 		fi
-		sendsnaps
 	fi
 )
 done
