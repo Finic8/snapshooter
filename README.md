@@ -27,6 +27,10 @@ If you want to change this, edit the configdir variable in the actual script.
 	# for the server to be booted. Can be overridden by an individual config.
 	defaultboottime=120
 	
+	# if you want to automatically poweroff the remote server, set this to yes
+	# or override it by an individual config.
+	poweroffserver='no'
+	
 	
 ###2.2 Configs for creation of snapshots:
 
@@ -117,7 +121,9 @@ config file syntax for snapshots which should be sent:
 	# optionally override the default boot time ( in seconds )
 	boottime=180
 
-
+	# it the server shoud be shut down, after the sending of snapshots,
+	# set to yes
+	poweroffserver='yes'
 
 
 ##3 Using the script:
