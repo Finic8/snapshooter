@@ -28,10 +28,10 @@ exit 2
 [ $# -eq 0 ] && printusage
 mode=$1
 if [ $mode == 'create' ]; then
-	for (( i=${#periods[@]}; i>0; i-- )); do
-		if [[ ${periods[$i-1]} == "$2" ]]; then
+	for (( i=${#periods[@]}-1; i>=0; i-- )); do
+		if [[ ${periods[$i]} == "$2" ]]; then
 			break
-		elif [ $i -eq 1 ]; then
+		elif [ $i -eq 0 ]; then
 			echo "invalid period specified"
 			printusage
 		else
@@ -59,50 +59,44 @@ else
 	echo "invalid option"
 	printusage
 fi
+
 getnames () {
 	if [ -z "$name" ]; then
 		echo "ERROR: no name specified"
 		exit 11
 	elif [ "$name" == '*' ]; then
-		allcontents=$(btrfs subvolum list -o $snapdir | awk -F/ '{print $NF}')
-		for allcontent in $allcontents; do
-			echo "$allcontent"
+		for allcontent in $(btrfs subvolum list -o $snapdir | awk -F/ '{print $NF}'); do
 			if [[ "$snapdir/$allcontent" == "$destination" ]]; then continue
 			else
 				contents+=("$(echo $allcontent | awk -F- '{print $1}' | awk -F_ '{print $(NF-1)}')")
 			fi
 		done
-		relativcontents=$(printf '%s\n' "${contents[@]}" | sort)
-		pref=
-		for content in ${relativcontents[@]}; do
-			if [ "$content" == "$pref" ]; then continue
-			else
-				names+=("$content")
-				pref=$content
-			fi
-		done
+		names=$(printf '%s\n' "${contents[@]}" | sort | uniq)
 	else
 		IFS=',' read -ra names <<< "$name"
-		[ "$mode" != "create" ] && { recursive=yes; }
-		for possname in ${names[@]}; do
-			if [ "$recursive" == "no" ]; then
-				if [ -n "$(btrfs subvolume show $snapdir | grep "ERROR")" ]; then
-					echo "ERROR: $snapdir is not a btrfs subvolume"
-					exit 13
+		[ "$mode" == "send" ] && { recursive=yes; }
+		if [ "$recursive" == "no" ]; then
+			if [[ -z "$(btrfs subvolume show $snapdir)" ]]; then
+				echo "ERROR: $snapdir is not a btrfs subvolume"
+				exit 13
+			fi
+		elif [ "$recursive" == "yes" ]; then
+			content=$(btrfs subvolume list -o $snapdir | awk -F/ '{print $NF}')
+			for possname in ${names[@]}; do
+				if [ -z "$(echo $content | grep $possname)" ]; then
+					echo "ERROR: $possname does not exist"
+					exit 6
 				fi
-			elif [ "$recursive" == "yes" ]; then
-				content=$(btrfs subvolume list -o $snapdir | awk -F/ '{print $NF}' | grep $possname)
-				[ -z "$content" ] && { echo "ERROR: $possname does not exist"; exit 6; }
-			else
+			done
+		else
 				echo "ERROR: $config : recursive can only be set to yes or no"
 				exit 14
-			fi
-		done
+		fi
 	fi
 }
 sshconect () {
 	if [ -n "$port" ]; then
-		if [ $port -lt o ] || [ $port -gt 65535 ]; then
+		if [ $port -lt 0 ] || [ $port -gt 65535 ]; then
 			echo "invalid port specified"
 			exit 10
 		fi
@@ -137,9 +131,9 @@ sshconect () {
 	echo "server online, running backup..."
 }
 cleanup () {
-	for (( i=${#periods[@]}; i>0; i-- )); do
-		destcont=$(getcontents $destination)
-		tobedeleted=$(printf '%s\n' $destcont | grep ${periods[$i-1]}| tac | tail -n +$(( ${ntk[$i-1]} + 1)))
+	destcont=$(getcontents $destination)
+	for (( i=${#periods[@]}-1; i>=0; i-- )); do
+		tobedeleted=$(printf '%s\n' $destcont | grep ${periods[$i]}| tac | tail -n +$(( ${ntk[$i]} + 1)))
 		if [ -z "$sshlogin" ]; then
 			for tobedel in $tobedeleted; do
 				echo "deleting: $destination/$tobedel"
@@ -170,59 +164,76 @@ sendsnaps () {
 	do
 	(
 		destcont=$(getcontents $destination)
-		#echo "destcont"
-		#printf '%s\n' $destcont
+		#echo "destcont" && printf '%s\n' $destcont
 		sourcecont=$(getcontents $snapdir)
-		#echo "sourcecont:"
-		#printf '%s\n' $sourcecont
+		#echo "sourcecont:" && printf '%s\n' $sourcecont
 		commonsnap="$(diff -y <(printf '%s\n' $sourcecont) <(printf '%s\n' $destcont) | egrep -v '<|>|\|' | awk 'END{print $1}')"
-		for (( i=${#periods[@]}; i>0; i-- )); do
-			srcntk=$(printf '%s\n' $sourcecont | grep "${periods[$i-1]}" | wc -l)
-			if [ ${ntk[$i-1]} -eq 0 ] || [ $srcntk -eq 0 ]; then 
-				continue
+
+		echo && echo "snapshots: $snapname"
+		printf '%10s' "local" "remote" "sending" "deleting"
+		echo "    period"
+		echo
+		for (( i=${#periods[@]}-1; i>=0; i-- )); do
+			count_local[$i]=$(printf '%s\n' $sourcecont | grep "${periods[$i]}" | wc -l)
+			count_remote[$i]=$(printf '%s\n' $destcont | grep "${periods[$i]}" | wc -l)
+			if [[ ${ntk[$i]} -eq 0 ]] || [[ ${count_local[$i]} -eq 0 ]]; then 
+				count_sending[$i]=0
 			else
-				possinit+=("$(diff -y <(printf '%s\n' $sourcecont) <(printf '%s\n' $destcont) | grep "${periods[$i-1]}" | tail -n ${ntk[$i-1]} | egrep '<|\|' | awk '{print $1}')")
+				diffstrng="$(diff -y <(printf '%s\n' $sourcecont) <(printf '%s\n' $destcont) | grep "${periods[$i]}" | tail -n ${ntk[$i]} | egrep '<|\|' | awk '{print $1}')"
+				count_sending[$i]=$(echo "$diffstrng" | wc -w)
+				possinit+=("$diffstrng")
 			fi
+			# print summary table
+			count_deleting=$((${count_remote[$i]}+${count_sending[$i]}-${ntk[$i]}))
+			[ $count_deleting -lt 0 ] && count_deleting=0
+			printf '%10s' "${count_local[$i]}" "${count_remote[$i]}/${ntk[$i]}"
+			printf '%10s' "${count_sending[$i]}" "$count_deleting"
+			echo "    ${periods[$i]}"
+			all[0]=$((${all[0]}+${count_local[$i]}))
+			all[1]=$((${all[1]}+${count_remote[$i]}))
+			all[2]=$((${all[2]}+${ntk[$i]}))
+			all[3]=$((${all[3]}+${count_sending[$i]}))
+			all[4]=$((${all[4]}+$count_deleting))
 		done
+		echo
+		printf '%10s' "${all[0]}" "${all[1]}/${all[2]}" "${all[3]}" "${all[4]}"
+		echo "    all"
+		echo
 		snapshots=$(printf '%s\n' "${possinit[@]}" | sort)
-		echo "snapshots:" 
-		echo "$snapshots"
-		if [ -z "$snapshots" ]; then 
-			echo $snapname": everything up to date"
-			cleanup
-			continue
-		fi
 		if [ -z "$commonsnap" ]; then
 			parentsnap=$(echo $snapshots | cut -d " " -f1)
-			snapshots=$(echo $snapshots | cut -d " " -f2-)
-	
+			snapshots=$(echo ${snapshots#$parentsnap})
 			echo "bootstrapping... $parentsnap"
 			if [ -z "$sshlogin" ]; then
-				btrfs send $snapdir/$parentsnap | btrfs receive $destination/
+				btrfs  send -q $snapdir/$parentsnap | btrfs receive $destination/
 			else
-				btrfs send $snapdir/$parentsnap | ssh $sshlogin "btrfs receive $destination/"
+				btrfs  send -q $snapdir/$parentsnap | ssh $sshlogin "btrfs receive $destination/"
 			fi
 			echo "bootstrapping complete"
 		else
 			parentsnap=$commonsnap
-			echo "parent snapshot present: $parentsnap"
 		fi
-		echo "incrementally sending snapshots..." 
-		for snap in $snapshots; do
-			echo "sending: $snap"
-			if [ -z "$sshlogin" ]; then
-				btrfs send -p $snapdir/$parentsnap $snapdir/$snap | btrfs receive $destination/
-			else
-				btrfs send -p $snapdir/$parentsnap $snapdir/$snap | ssh $sshlogin "btrfs receive $destination/"
-			fi
-			parentsnap=$snap
-		done
-	cleanup
+		#echo "snapshots: $snapshots"
+		if [ -n "$snapshots" ]; then 
+			echo "parent snapshot present: $parentsnap"
+			echo "incrementally sending snapshots..." 
+			for snap in $snapshots; do
+				echo "sending: $snap"
+				if [ -z "$sshlogin" ]; then
+					btrfs  send -q -p $snapdir/$parentsnap $snapdir/$snap | btrfs receive $destination/
+				else
+					btrfs  send -q -p $snapdir/$parentsnap $snapdir/$snap | ssh $sshlogin "btrfs receive $destination/"
+				fi
+				parentsnap=$snap
+			done
+		fi
+		echo $snapname": everything up to date"
+		cleanup
 	)
 	done
 }
 createsnaps () {
-	echo "creating $1 snapshots" 
+	echo "creating $1 snapshots..." 
 	for snapname in ${names[@]}; do
 		if [ "$recursive" == "no" ]; then
 			sourcesnap=$snapdir
@@ -233,10 +244,11 @@ createsnaps () {
 		cleanup
 	done
 }
+
 for config in ${configs[@]} 
 do
 (
-	echo "config $config"
+	echo "config: $config"
 	[ ! -f $config ] && { echo "ERROR: specified config does not exist"; exit 1; }
 	source $config
 	[ -z $snapdir ] && { echo "ERROR: snapdir in $config is not set"; exit 3; }
@@ -256,12 +268,15 @@ do
 	done
 	[ -n "$prefix" ] && prefix=$prefix"_"
 	[ -n "$postfix" ] && postfix="_"$postfix
-	echo ${periods[@]}
-	echo "ntk ${ntk[@]}"
+	echo "periods: ${periods[@]}"
 	[ ! -d $snapdir ] && { echo "ERROR: snapdir does not exist"; exit 5; }
 	getnames
-	echo "names ${names[@]}"
+	#echo "names: ${names[@]}"
 	if [ $mode == 'create' ];then
+		if [ ! -d $destination ]; then 
+			echo "ERROR: destination does not exist"
+			exit 7
+		fi
 		createsnaps $2
 	else
 		if [ -n "$sshlogin" ]; then 
