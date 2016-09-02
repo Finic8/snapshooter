@@ -61,36 +61,46 @@ else
 fi
 
 getnames () {
-	if [ -z "$name" ]; then
-		echo "ERROR: no name specified"
-		exit 11
-	elif [ "$name" == '*' ]; then
-		for allcontent in $(btrfs subvolum list -o $snapdir | awk -F/ '{print $NF}'); do
-			if [[ "$snapdir/$allcontent" == "$destination" ]]; then continue
-			else
-				contents+=("$(echo $allcontent | awk -F- '{print $1}' | awk -F_ '{print $(NF-1)}')")
-			fi
-		done
-		names=$(printf '%s\n' "${contents[@]}" | sort | uniq)
+	if [ "$mode" == "send" ]; then
+		allnames=$(getcontents $snapdir | awk -F: '{print $1}' | awk -F_ '{print $((NF-2))}' | sort | uniq)
+		if [ "$name" == '*' ]; then
+			names=$allnames
+		else
+			IFS=',' read -ra names <<< "$name"
+			for (( i=${#names[@]}-1; i>=0; i-- )); do
+				if [ -z "$(printf '%s\n' $allnames | grep "^${names[$i]}$")" ]; then
+					echo "ERROR ${names[$i]} does not exist"
+					exit 14
+				fi
+			done
+		fi
 	else
-		IFS=',' read -ra names <<< "$name"
-		[ "$mode" == "send" ] && { recursive=yes; }
-		if [ "$recursive" == "no" ]; then
+		if [ "$recursive" == "no" ];then
 			if [[ -z "$(btrfs subvolume show $snapdir)" ]]; then
 				echo "ERROR: $snapdir is not a btrfs subvolume"
 				exit 13
 			fi
 		elif [ "$recursive" == "yes" ]; then
 			content=$(btrfs subvolume list -o $snapdir | awk -F/ '{print $NF}')
-			for possname in ${names[@]}; do
-				if [ -z "$(echo $content | grep $possname)" ]; then
-					echo "ERROR: $possname does not exist"
-					exit 6
-				fi
-			done
+			if [ "$name" == '*' ]; then
+				for cont in $content; do
+					if [[ "$snapdir/$cont" != "$destination" ]]; then
+						contents+=( $cont )
+					fi
+				done
+				names=$(printf '%s\n' "${contents[@]}" | sort)
+			else
+				IFS=',' read -ra names <<< "$name"
+				for possname in ${names[@]}; do
+					if [ -z "$(printf '%s\n'  $content | grep "^$possname$")" ]; then
+						echo "ERROR: $possname does not exist"
+						exit 6
+					fi
+				done
+			fi
 		else
-				echo "ERROR: $config : recursive can only be set to yes or no"
-				exit 14
+			echo "ERROR: $config : recursive can only be set to yes or no"
+			exit 14
 		fi
 	fi
 }
@@ -131,7 +141,7 @@ sshconect () {
 	echo "server online, running backup..."
 }
 cleanup () {
-	destcont=$(getcontents $destination)
+	destcont=$(getcontents $destination | grep $snapname | sort)
 	for (( i=${#periods[@]}-1; i>=0; i-- )); do
 		tobedeleted=$(printf '%s\n' $destcont | grep ${periods[$i]}| tac | tail -n +$(( ${ntk[$i]} + 1)))
 		if [ -z "$sshlogin" ]; then
@@ -151,21 +161,39 @@ cleanup () {
 }
 getcontents () {
 	if [ -n "$sshlogin" ] && [ "$1" == "$destination" ]; then
-		cont=$(ssh $sshlogin "btrfs subvolume list -o $destination" | awk -F/ '{print $NF}' | grep $snapname | sort)
+		cont=$(ssh $sshlogin "btrfs subvolume list -o $destination" | awk -F/ '{print $NF}')
 	else
-		cont=$(btrfs subvolume list -o $1 | awk -F/ '{print $NF}' | grep $snapname | sort)
+		cont=$(btrfs subvolume list -o $1 | awk -F/ '{print $NF}')
 	fi
-	[ -n "$prefix" ] && cont=$(printf '%s\n' $cont | grep "$prefix")
-	[ -n "$postfix" ] && cont=$(printf '%s\n' $cont | grep "$postfix")
+	if [ -n "$prefix" ]; then
+		cont=$(printf '%s\n' $cont | grep "^$prefix")
+	else
+		cont=$(for content in $cont; do
+			if [ $(echo $content | awk -F: '{print $1}' | awk -F_ '{print NF}') -eq 3 ]; then
+				echo $content
+			fi
+		done
+		)
+	fi
+	if [ -n "$postfix" ]; then
+		cont=$(printf '%s\n' $cont | grep "$postfix$")
+	else
+		cont=$(for content in $cont; do
+			if [ $(echo $content | awk -F: '{print $NF}' | awk -F_ '{print NF}') -eq 2 ]; then
+				echo $content
+			fi
+		done
+		)
+	fi
 	printf '%s\n' $cont
 }
 sendsnaps () {
 	for snapname in ${names[@]}
 	do
 	(
-		destcont=$(getcontents $destination)
+		destcont=$(getcontents $destination | grep $snapname | sort)
 		#echo "destcont" && printf '%s\n' $destcont
-		sourcecont=$(getcontents $snapdir)
+		sourcecont=$(getcontents $snapdir | grep $snapname | sort)
 		#echo "sourcecont:" && printf '%s\n' $sourcecont
 		commonsnap="$(diff -y <(printf '%s\n' $sourcecont) <(printf '%s\n' $destcont) | egrep -v '<|>|\|' | awk 'END{print $1}')"
 
@@ -199,6 +227,10 @@ sendsnaps () {
 		printf '%10s' "${all[0]}" "${all[1]}/${all[2]}" "${all[3]}" "${all[4]}"
 		echo "    all"
 		echo
+		if [ ${all[0]} -eq 0 ]; then
+			echo "ERROR: no local snapshots"
+			exit 17
+		fi
 		snapshots=$(printf '%s\n' "${possinit[@]}" | sort)
 		if [ -z "$commonsnap" ]; then
 			parentsnap=$(echo $snapshots | cut -d " " -f1)
@@ -234,13 +266,15 @@ sendsnaps () {
 }
 createsnaps () {
 	echo "creating $1 snapshots..." 
+	[ -n "$prefix" ] && prefix=$prefix"_"
+	[ -n "$postfix" ] && postfix="_"$postfix
 	for snapname in ${names[@]}; do
 		if [ "$recursive" == "no" ]; then
 			sourcesnap=$snapdir
 		else
 			sourcesnap=$snapdir/$snapname
 		fi
-		btrfs subvolume snapshot -r $sourcesnap $destination/$prefix$snapname"_$(date +%Y-%m-%d_%H:%M:%S)_$1$postfix"
+		btrfs subvolume snapshot -r $sourcesnap $destination/$prefix$snapname"_"$(date +%Y-%m-%d_%H:%M:%S)"_"$1$postfix
 		cleanup
 	done
 }
@@ -248,11 +282,13 @@ createsnaps () {
 for config in ${configs[@]} 
 do
 (
-	echo "config: $config"
-	[ ! -f $config ] && { echo "ERROR: specified config does not exist"; exit 1; }
+	[ ! -f $config ] && { echo "ERROR: config: $config not a file"; exit 1; }
 	source $config
-	[ -z $snapdir ] && { echo "ERROR: snapdir in $config is not set"; exit 3; }
-	[ -z $destination ] && { echo "ERROR: destination in $config is not set"; exit 4; }
+	[[ $mode == 'create' ]] && [[ ${!2} -eq 0 ]] && continue
+	echo "config: $config"
+	[ -z "$name" ] && { echo "ERROR: no name specified"; exit 11; }
+	[ -z "$snapdir" ] && { echo "ERROR: snapdir in $config is not set"; exit 3; }
+	[ -z "$destination" ] && { echo "ERROR: destination in $config is not set"; exit 4; }
 	
 	for period in ${periods[@]}
 	do
@@ -266,12 +302,10 @@ do
 		fi
 		eval "$period=0"
 	done
-	[ -n "$prefix" ] && prefix=$prefix"_"
-	[ -n "$postfix" ] && postfix="_"$postfix
-	echo "periods: ${periods[@]}"
 	[ ! -d $snapdir ] && { echo "ERROR: snapdir does not exist"; exit 5; }
 	getnames
 	#echo "names: ${names[@]}"
+	[ -n "$ip" ] && sshlogin+"root@"$ip
 	if [ $mode == 'create' ];then
 		if [ ! -d $destination ]; then 
 			echo "ERROR: destination does not exist"
