@@ -28,16 +28,11 @@ exit 2
 [ $# -eq 0 ] && printusage
 mode=$1
 if [ $mode == 'create' ]; then
-	for (( i=${#periods[@]}-1; i>=0; i-- )); do
-		if [[ ${periods[$i]} == "$2" ]]; then
-			break
-		elif [ $i -eq 0 ]; then
-			echo "invalid period specified"
-			printusage
-		else
-			continue
-		fi
-	done
+	if [ -z $(printf '%s\n' ${periods[@]} | grep "^$2$") ]; then
+		echo "invalid period specified"
+		printusage
+	fi
+	echo "creating $2 snapshots"
 	configs=$configdir/create/*.conf
 elif [ $mode == 'send' ]; then
 	if [ -z "$2" ]; then
@@ -60,28 +55,33 @@ else
 	printusage
 fi
 
+checknames () {
+	IFS=',' read -ra names <<< "$name"
+	for (( i=${#names[@]}-1; i>=0; i-- )); do
+		if [ -z "$(printf '%s\n' $content | grep "^${names[$i]}$")" ]; then
+			echo "ERROR ${names[$i]} does not exist"
+			exit 6
+		fi
+	done
+}
 getnames () {
 	if [ "$mode" == "send" ]; then
-		allnames=$(getcontents $snapdir | awk -F: '{print $1}' | awk -F_ '{print $((NF-2))}' | sort | uniq)
+		content=$(getcontents $snapdir | awk -F: '{print $1}' | awk -F_ '{print $((NF-2))}' | sort | uniq)
 		if [ "$name" == '*' ]; then
-			names=$allnames
+			names=$content
 		else
-			IFS=',' read -ra names <<< "$name"
-			for (( i=${#names[@]}-1; i>=0; i-- )); do
-				if [ -z "$(printf '%s\n' $allnames | grep "^${names[$i]}$")" ]; then
-					echo "ERROR ${names[$i]} does not exist"
-					exit 14
-				fi
-			done
+			checknames
 		fi
 	else
 		if [ "$recursive" == "no" ];then
 			if [[ -z "$(btrfs subvolume show $snapdir)" ]]; then
 				echo "ERROR: $snapdir is not a btrfs subvolume"
 				exit 13
+			else
+				names=$name
 			fi
 		elif [ "$recursive" == "yes" ]; then
-			content=$(btrfs subvolume list -o $snapdir | awk -F/ '{print $NF}')
+			content=$(btrfs subvolume list -o $snapdir | awk -F/ '{print $NF}' | awk '{print $NF}')
 			if [ "$name" == '*' ]; then
 				for cont in $content; do
 					if [[ "$snapdir/$cont" != "$destination" ]]; then
@@ -90,13 +90,7 @@ getnames () {
 				done
 				names=$(printf '%s\n' "${contents[@]}" | sort)
 			else
-				IFS=',' read -ra names <<< "$name"
-				for possname in ${names[@]}; do
-					if [ -z "$(printf '%s\n'  $content | grep "^$possname$")" ]; then
-						echo "ERROR: $possname does not exist"
-						exit 6
-					fi
-				done
+				checknames
 			fi
 		else
 			echo "ERROR: $config : recursive can only be set to yes or no"
@@ -265,7 +259,6 @@ sendsnaps () {
 	done
 }
 createsnaps () {
-	echo "creating $1 snapshots..." 
 	[ -n "$prefix" ] && prefix=$prefix"_"
 	[ -n "$postfix" ] && postfix="_"$postfix
 	for snapname in ${names[@]}; do
