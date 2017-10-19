@@ -1,18 +1,18 @@
-#snapshooter
+# snapshooter
 
-##1 Introduction
+## 1 Introduction
 
 
 snapshooter is a bash script which allows you to create btrfs snapshots and send them incrementally to local or remote locations through ssh. Remote servers can be woken up using Wake-on-LAN. It automatically keeps a configurable number of snapshots.
 
 
-##2 Configuration
+## 2 Configuration
 
 
 All configuration files are by default located in /usr/local/etc/snapshooter/ 
 If you want to change this, edit the configdir variable in the actual script.
 
-###2.1 Main configuration file
+### 2.1 Main configuration file
 
 /usr/local/etc/snapshooter/snapshooter.conf:
 
@@ -32,7 +32,7 @@ If you want to change this, edit the configdir variable in the actual script.
 	poweroffserver='no'
 	
 	
-###2.2 Configs for creation of snapshots:
+### 2.2 Configs for creation of snapshots:
 
 /usr/local/etc/snapshooter/create/[configname].conf
 
@@ -75,7 +75,7 @@ A snapshot will be named:
 laptop_subvol0_2016-07-24_06:00:00_hourly_read-only
 
 
-###2.3 Configs for sending of snapshots:
+### 2.3 Configs for sending of snapshots:
 
 /usr/local/etc/snapshooter/send/[configname].conf
 
@@ -126,10 +126,10 @@ config file syntax for snapshots which should be sent:
 	poweroffserver='yes'
 
 
-##3 Using the script:
+## 3 Using the script:
 
 
-###3.1 creating snapshots:
+### 3.1 creating snapshots:
 
 snapshooter create [period]
 
@@ -140,7 +140,7 @@ and get rid of old snapshots automatically.
 
 
 
-###3.2 sending snapshots:
+### 3.2 sending snapshots:
 
 snapshooter send [configname]
 
@@ -154,7 +154,7 @@ Old snapshots will be deleted automatically.
 
 
 
-##4 Automation
+## 4 Automation
 
 The script is supposed be automaticly run using systemd or cron.
 
@@ -163,7 +163,7 @@ This article will help you create these units if you do not already know how to 
 
 NOTE: The script must be run as root, since the btrfs commands require it.
 
-##5 Miscellaneous
+## 5 Miscellaneous
 
 Disclaimer:
 I'm in no way responsible for any damage or dataloss the script may cause, through bugs or incorrect configuration.
